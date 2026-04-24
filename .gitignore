@@ -20,3 +20,5 @@ backend/data/*.jsonl
 backend/data/shares.json
 backend/data/access-log.jsonl
 backend/data/otp-log.jsonl
+backend/documents/*.pdf
+!backend/documents/.gitkeep

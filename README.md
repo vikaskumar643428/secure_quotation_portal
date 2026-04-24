@@ -21,6 +21,7 @@ This project sends secure document links by email. Each link is bound to one rec
 
 1. Put the PDF file inside `backend/documents/`
 2. Add one entry in `backend/data/documents.json`
+3. Keep confidential PDFs out of Git. The repo now ignores future `backend/documents/*.pdf` files by default.
 
 Example:
 
@@ -148,3 +149,4 @@ The production frontend will be available on:
 - Change all default secrets and admin credentials before production use.
 - Put the app behind HTTPS in production.
 - Consider replacing in-memory OTP storage with Redis or a database for multi-server deployments.
+- If a confidential PDF was already pushed once, ignoring it now will not remove it from old Git history.
