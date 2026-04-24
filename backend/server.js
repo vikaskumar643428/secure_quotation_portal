@@ -24,12 +24,9 @@ const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || FRONTEND_URL)
   .map((value) => value.trim())
   .filter(Boolean);
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
-const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || JWT_SECRET;
-const ADMIN_EMAIL = normalizeEmail(process.env.ADMIN_EMAIL || "admin@example.com");
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "change_admin_password";
-const ALLOWED_RECIPIENT_EMAIL = normalizeEmail(process.env.ALLOWED_RECIPIENT_EMAIL || "laser.mis8@gmail.com");
 const SENDER_EMAIL = process.env.SENDER_EMAIL || "samrat.dey@laserpowerinfra.com";
 const DOCUMENT_ID = process.env.DOCUMENT_ID || "quotation-00119";
+const DOCUMENT_TITLE = process.env.DOCUMENT_TITLE || "Quotation LQ26Y-00119";
 const DOCUMENT_FILE = process.env.DOCUMENT_FILE || "quotation_LQ26Y-00119.pdf";
 const OTP_EXPIRY_MINUTES = Number(process.env.OTP_EXPIRY_MINUTES || 5);
 const ACCESS_TOKEN_MINUTES = Number(process.env.ACCESS_TOKEN_MINUTES || 10);
@@ -40,7 +37,6 @@ const DOC_DIR = path.join(__dirname, "documents");
 const ACCESS_LOG_FILE = path.join(DATA_DIR, "access-log.jsonl");
 const OTP_LOG_FILE = path.join(DATA_DIR, "otp-log.jsonl");
 const SHARE_FILE = path.join(DATA_DIR, "shares.json");
-const DOCUMENTS_FILE = path.join(DATA_DIR, "documents.json");
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(DOC_DIR, { recursive: true });
@@ -56,83 +52,10 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json({ limit: "1mb" }));
-app.use(rateLimit({ windowMs: 60 * 1000, max: 20 }));
+app.use(rateLimit({ windowMs: 60 * 1000, max: 30 }));
 
 // In-memory OTP store. Production me Redis/PostgreSQL use karein.
 const otpStore = new Map();
-
-function defaultDocuments() {
-  return [
-    {
-      documentId: DOCUMENT_ID,
-      title: "Quotation LQ26Y-00119",
-      fileName: DOCUMENT_FILE
-    }
-  ];
-}
-
-function ensureDocumentsFile() {
-  if (!fs.existsSync(DOCUMENTS_FILE)) {
-    fs.writeFileSync(DOCUMENTS_FILE, JSON.stringify(defaultDocuments(), null, 2));
-  }
-}
-
-function readDocuments() {
-  ensureDocumentsFile();
-
-  try {
-    const raw = fs.readFileSync(DOCUMENTS_FILE, "utf8").trim();
-    const parsed = raw ? JSON.parse(raw) : [];
-
-    return parsed
-      .filter((doc) => doc && doc.documentId && doc.fileName)
-      .map((doc) => ({
-        documentId: String(doc.documentId).trim(),
-        title: String(doc.title || doc.documentId).trim(),
-        fileName: String(doc.fileName).trim()
-      }));
-  } catch {
-    return defaultDocuments();
-  }
-}
-
-function getDocumentById(documentId) {
-  return readDocuments().find((doc) => doc.documentId === documentId) || null;
-}
-
-function readShares() {
-  if (!fs.existsSync(SHARE_FILE)) {
-    return [];
-  }
-
-  try {
-    const raw = fs.readFileSync(SHARE_FILE, "utf8").trim();
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeShares(shares) {
-  fs.writeFileSync(SHARE_FILE, JSON.stringify(shares, null, 2));
-}
-
-function findShareById(shareId) {
-  return readShares().find((share) => share.shareId === shareId) || null;
-}
-
-function upsertShare(share) {
-  const shares = readShares();
-  const index = shares.findIndex((item) => item.shareId === share.shareId);
-
-  if (index >= 0) {
-    shares[index] = share;
-  } else {
-    shares.push(share);
-  }
-
-  writeShares(shares);
-}
 
 function nowIso() {
   return new Date().toISOString();
@@ -164,6 +87,40 @@ function writeOtpLog(req, data) {
   });
 }
 
+function readShares() {
+  if (!fs.existsSync(SHARE_FILE)) {
+    return [];
+  }
+
+  try {
+    const raw = fs.readFileSync(SHARE_FILE, "utf8").trim();
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeShares(shares) {
+  fs.writeFileSync(SHARE_FILE, JSON.stringify(shares, null, 2));
+}
+
+function upsertShare(share) {
+  const shares = readShares();
+  const index = shares.findIndex((item) => item.shareId === share.shareId);
+
+  if (index >= 0) {
+    shares[index] = share;
+  } else {
+    shares.push(share);
+  }
+
+  writeShares(shares);
+}
+
+function findShareById(shareId) {
+  return readShares().find((share) => share.shareId === shareId) || null;
+}
+
 function createOtp() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
@@ -188,7 +145,7 @@ function createTransporter() {
   });
 }
 
-async function sendOtpEmail(to, otp) {
+async function sendOtpEmail(to, otp, documentTitle) {
   const transporter = createTransporter();
 
   if (!transporter) {
@@ -202,10 +159,11 @@ async function sendOtpEmail(to, otp) {
   await transporter.sendMail({
     from: SENDER_EMAIL,
     to,
-    subject: "OTP for Secure Quotation Access",
+    subject: `OTP for ${documentTitle}`,
     html: `
       <div style="font-family:Arial,sans-serif;line-height:1.5">
-        <h2>Secure Quotation Access OTP</h2>
+        <h2>Secure PDF OTP</h2>
+        <p>Document: <strong>${documentTitle}</strong></p>
         <p>Your OTP is:</p>
         <h1 style="letter-spacing:4px">${otp}</h1>
         <p>This OTP is valid for ${OTP_EXPIRY_MINUTES} minutes.</p>
@@ -217,48 +175,46 @@ async function sendOtpEmail(to, otp) {
   return { mode: "email" };
 }
 
-async function sendQuotationLinkEmail({ to, shareUrl, title }) {
+async function sendSecureLinkEmail(share) {
   const transporter = createTransporter();
+  const shareUrl = `${FRONTEND_URL}?share=${encodeURIComponent(share.shareId)}`;
 
   if (!transporter) {
     console.log("\n================ SHARE LINK EMAIL DEBUG ================");
-    console.log(`SMTP not configured. Secure link for ${to}: ${shareUrl}`);
+    console.log(`SMTP not configured. Secure link for ${share.recipientEmail}: ${shareUrl}`);
     console.log("backend/.env me SMTP_PASS set karne ke baad real email jayega.");
     console.log("========================================================\n");
-    return { mode: "console" };
+    return { mode: "console", shareUrl };
   }
 
   await transporter.sendMail({
     from: SENDER_EMAIL,
-    to,
-    subject: `Secure access link for ${title}`,
+    to: share.recipientEmail,
+    subject: `Secure PDF Access: ${share.documentTitle}`,
     html: `
       <div style="font-family:Arial,sans-serif;line-height:1.5">
-        <h2>Secure Quotation Access</h2>
-        <p>Your document is available on the secure link below:</p>
+        <h2>Secure PDF Access</h2>
+        <p>Document: <strong>${share.documentTitle}</strong></p>
+        <p>Please use this secure link:</p>
         <p><a href="${shareUrl}">${shareUrl}</a></p>
-        <p>This link is bound to <strong>${to}</strong> and the PDF will open only after OTP verification on the same email ID.</p>
-        <p>If you did not expect this email, please ignore it.</p>
+        <p>This PDF can be opened only on email OTP sent to <strong>${share.recipientEmail}</strong>.</p>
       </div>
     `
   });
 
-  return { mode: "email" };
+  return { mode: "email", shareUrl };
 }
 
-function makeToken(email, shareId, documentId) {
+function makeToken(email, shareId) {
   return jwt.sign(
-    { email, documentId: documentId || DOCUMENT_ID, shareId: shareId || null, type: "document_access" },
+    {
+      email,
+      documentId: DOCUMENT_ID,
+      shareId,
+      type: "document_access"
+    },
     JWT_SECRET,
     { expiresIn: `${ACCESS_TOKEN_MINUTES}m` }
-  );
-}
-
-function makeAdminToken(email) {
-  return jwt.sign(
-    { email, type: "admin" },
-    ADMIN_JWT_SECRET,
-    { expiresIn: "12h" }
   );
 }
 
@@ -267,86 +223,44 @@ function auth(req, res, next) {
   const token = header.startsWith("Bearer ") ? header.slice(7) : header;
 
   if (!token) {
-    writeAccessLog(req, { action: "pdf_access", status: "failed", reason: "missing_token" });
+    writeAccessLog(req, { action: "pdf_access", status: "failed", reason: "missing_token", documentId: DOCUMENT_ID });
     return res.status(401).json({ error: "Access token missing" });
   }
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
+    const share = findShareById(decoded.shareId);
 
-    if (decoded.shareId) {
-      const share = findShareById(decoded.shareId);
-
-      if (!share || share.documentId !== decoded.documentId || normalizeEmail(share.recipientEmail) !== normalizeEmail(decoded.email)) {
-        writeAccessLog(req, { action: "pdf_access", email: decoded.email, status: "failed", reason: "share_not_valid", shareId: decoded.shareId });
-        return res.status(403).json({ error: "This secure link is no longer valid" });
-      }
-
-      req.share = share;
-    } else if (normalizeEmail(decoded.email) !== ALLOWED_RECIPIENT_EMAIL) {
-      writeAccessLog(req, { action: "pdf_access", email: decoded.email, status: "failed", reason: "email_not_allowed" });
-      return res.status(403).json({ error: "Email not allowed" });
+    if (!share || normalizeEmail(share.recipientEmail) !== normalizeEmail(decoded.email)) {
+      writeAccessLog(req, {
+        action: "pdf_access",
+        status: "failed",
+        reason: "share_not_valid",
+        shareId: decoded.shareId,
+        documentId: DOCUMENT_ID,
+        email: decoded.email
+      });
+      return res.status(403).json({ error: "This secure link is no longer valid" });
     }
 
     req.user = decoded;
-    next();
+    req.share = share;
+    return next();
   } catch {
-    writeAccessLog(req, { action: "pdf_access", status: "failed", reason: "invalid_or_expired_token" });
+    writeAccessLog(req, { action: "pdf_access", status: "failed", reason: "invalid_or_expired_token", documentId: DOCUMENT_ID });
     return res.status(401).json({ error: "Invalid or expired access token" });
   }
 }
 
-function adminAuth(req, res, next) {
-  const header = req.headers.authorization || "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : header;
-
-  if (!token) {
-    return res.status(401).json({ error: "Admin token missing" });
-  }
-
-  try {
-    const decoded = jwt.verify(token, ADMIN_JWT_SECRET);
-
-    if (decoded.type !== "admin" || normalizeEmail(decoded.email) !== ADMIN_EMAIL) {
-      return res.status(403).json({ error: "Admin access denied" });
-    }
-
-    req.admin = decoded;
-    return next();
-  } catch {
-    return res.status(401).json({ error: "Invalid or expired admin token" });
-  }
-}
-
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true });
-});
-
-app.post("/api/admin/login", (req, res) => {
-  const email = normalizeEmail(req.body.email);
-  const password = String(req.body.password || "");
-
-  if (email !== ADMIN_EMAIL || password !== ADMIN_PASSWORD) {
-    writeAccessLog(req, { action: "admin_login", status: "failed", email });
-    return res.status(401).json({ error: "Invalid admin credentials" });
-  }
-
-  const token = makeAdminToken(email);
-  writeAccessLog(req, { action: "admin_login", status: "success", email });
-  return res.json({ token, email });
-});
-
-app.get("/api/admin/documents", adminAuth, (req, res) => {
-  res.json({ documents: readDocuments() });
+  res.json({ ok: true, documentId: DOCUMENT_ID, title: DOCUMENT_TITLE });
 });
 
 app.get("/api/document-info", (req, res) => {
-  const document = getDocumentById(DOCUMENT_ID) || defaultDocuments()[0];
-
   res.json({
-    documentId: document.documentId,
-    title: document.title,
-    allowedRecipientEmail: ALLOWED_RECIPIENT_EMAIL
+    documentId: DOCUMENT_ID,
+    title: DOCUMENT_TITLE,
+    senderEmail: SENDER_EMAIL
   });
 });
 
@@ -360,31 +274,25 @@ app.get("/api/share/:shareId", (req, res) => {
   return res.json({
     shareId: share.shareId,
     documentId: share.documentId,
-    title: share.title,
-    allowedRecipientEmail: share.recipientEmail,
+    title: share.documentTitle,
+    recipientEmail: share.recipientEmail,
+    senderEmail: share.senderEmail,
     createdAt: share.createdAt
   });
 });
 
-app.post("/api/create-share", adminAuth, async (req, res) => {
+app.post("/api/create-share", async (req, res) => {
   const recipientEmail = normalizeEmail(req.body.recipientEmail);
-  const documentId = String(req.body.documentId || "").trim();
-  const document = getDocumentById(documentId);
-
-  if (!document) {
-    return res.status(404).json({ error: "Selected document not found" });
-  }
 
   if (!recipientEmail) {
     return res.status(400).json({ error: "Recipient email is required" });
   }
 
-  const shareId = uuidv4();
   const share = {
-    shareId,
-    documentId: document.documentId,
-    documentFile: document.fileName,
-    title: document.title,
+    shareId: uuidv4(),
+    documentId: DOCUMENT_ID,
+    documentTitle: DOCUMENT_TITLE,
+    documentFile: DOCUMENT_FILE,
     recipientEmail,
     senderEmail: SENDER_EMAIL,
     createdAt: nowIso()
@@ -392,35 +300,35 @@ app.post("/api/create-share", adminAuth, async (req, res) => {
 
   upsertShare(share);
 
-  const shareUrl = `${FRONTEND_URL}?share=${encodeURIComponent(shareId)}`;
-
   try {
-    const result = await sendQuotationLinkEmail({ to: recipientEmail, shareUrl, title: document.title });
+    const result = await sendSecureLinkEmail(share);
     writeAccessLog(req, {
       action: "create_share",
       status: "success",
-      recipientEmail,
-      shareId,
-      documentId: document.documentId,
-      deliveryMode: result.mode,
-      createdBy: req.admin.email
+      shareId: share.shareId,
+      documentId: share.documentId,
+      documentTitle: share.documentTitle,
+      senderEmail: share.senderEmail,
+      recipientEmail: share.recipientEmail,
+      deliveryMode: result.mode
     });
 
     return res.json({
       message: result.mode === "email" ? "Secure link sent to recipient email" : "SMTP not configured. Secure link printed in backend console.",
-      shareId,
-      shareUrl,
-      recipientEmail,
-      documentId: document.documentId
+      shareId: share.shareId,
+      shareUrl: result.shareUrl,
+      recipientEmail: share.recipientEmail,
+      documentTitle: share.documentTitle
     });
   } catch (err) {
     writeAccessLog(req, {
       action: "create_share",
       status: "failed",
-      recipientEmail,
-      shareId,
-      documentId: document.documentId,
-      createdBy: req.admin.email,
+      shareId: share.shareId,
+      documentId: share.documentId,
+      documentTitle: share.documentTitle,
+      senderEmail: share.senderEmail,
+      recipientEmail: share.recipientEmail,
       error: err.message
     });
     return res.status(500).json({ error: "Could not send secure link email" });
@@ -430,29 +338,28 @@ app.post("/api/create-share", adminAuth, async (req, res) => {
 app.post("/api/request-otp", async (req, res) => {
   const email = normalizeEmail(req.body.email);
   const shareId = String(req.body.shareId || "").trim();
+  const share = findShareById(shareId);
 
-  let allowedEmail = ALLOWED_RECIPIENT_EMAIL;
-  let documentId = DOCUMENT_ID;
-
-  if (shareId) {
-    const share = findShareById(shareId);
-
-    if (!share) {
-      writeOtpLog(req, { action: "request_otp", email, status: "blocked", reason: "share_not_found", shareId });
-      return res.status(404).json({ error: "Secure link not found" });
-    }
-
-    allowedEmail = normalizeEmail(share.recipientEmail);
-    documentId = share.documentId;
+  if (!share) {
+    writeOtpLog(req, { action: "request_otp", status: "failed", reason: "share_not_found", shareId, documentId: DOCUMENT_ID, email });
+    return res.status(404).json({ error: "Secure link not found" });
   }
 
   if (!email) {
     return res.status(400).json({ error: "Email is required" });
   }
 
-  if (email !== allowedEmail) {
-    writeOtpLog(req, { action: "request_otp", email, status: "blocked", reason: "email_not_allowed", shareId, documentId });
-    return res.status(403).json({ error: "This email is not authorized for this document" });
+  if (email !== normalizeEmail(share.recipientEmail)) {
+    writeOtpLog(req, {
+      action: "request_otp",
+      status: "blocked",
+      reason: "email_not_allowed",
+      shareId,
+      documentId: share.documentId,
+      documentTitle: share.documentTitle,
+      email
+    });
+    return res.status(403).json({ error: "This email is not authorized for this PDF" });
   }
 
   const otp = createOtp();
@@ -464,19 +371,38 @@ app.post("/api/request-otp", async (req, res) => {
     otpHash,
     expiresAt: Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000,
     attempts: 0,
-    shareId: shareId || null,
-    documentId
+    shareId,
+    documentId: share.documentId
   });
 
   try {
-    const result = await sendOtpEmail(email, otp);
-    writeOtpLog(req, { action: "request_otp", email, status: "sent", requestId, deliveryMode: result.mode, shareId, documentId });
-    return res.json({
-      message: result.mode === "email" ? "OTP sent to authorized email" : "SMTP not configured. OTP printed in backend console.",
-      requestId
+    const result = await sendOtpEmail(email, otp, share.documentTitle);
+    writeOtpLog(req, {
+      action: "request_otp",
+      status: "sent",
+      requestId,
+      shareId,
+      documentId: share.documentId,
+      documentTitle: share.documentTitle,
+      senderEmail: share.senderEmail,
+      recipientEmail: share.recipientEmail,
+      email,
+      deliveryMode: result.mode
     });
+    return res.json({ message: "OTP sent to recipient email", requestId });
   } catch (err) {
-    writeOtpLog(req, { action: "request_otp", email, status: "failed", requestId, error: err.message, shareId, documentId });
+    writeOtpLog(req, {
+      action: "request_otp",
+      status: "failed",
+      requestId,
+      shareId,
+      documentId: share.documentId,
+      documentTitle: share.documentTitle,
+      senderEmail: share.senderEmail,
+      recipientEmail: share.recipientEmail,
+      email,
+      error: err.message
+    });
     return res.status(500).json({ error: "Could not send OTP email" });
   }
 });
@@ -485,24 +411,25 @@ app.post("/api/verify-otp", async (req, res) => {
   const email = normalizeEmail(req.body.email);
   const otp = String(req.body.otp || "").trim();
   const shareId = String(req.body.shareId || "").trim();
+  const share = findShareById(shareId);
 
-  let allowedEmail = ALLOWED_RECIPIENT_EMAIL;
-  let documentId = DOCUMENT_ID;
-
-  if (shareId) {
-    const share = findShareById(shareId);
-
-    if (!share) {
-      writeOtpLog(req, { action: "verify_otp", email, status: "blocked", reason: "share_not_found", shareId });
-      return res.status(404).json({ error: "Secure link not found" });
-    }
-
-    allowedEmail = normalizeEmail(share.recipientEmail);
-    documentId = share.documentId;
+  if (!share) {
+    writeOtpLog(req, { action: "verify_otp", status: "failed", reason: "share_not_found", shareId, documentId: DOCUMENT_ID, email });
+    return res.status(404).json({ error: "Secure link not found" });
   }
 
-  if (email !== allowedEmail) {
-    writeOtpLog(req, { action: "verify_otp", email, status: "blocked", reason: "email_not_allowed", shareId, documentId });
+  if (email !== normalizeEmail(share.recipientEmail)) {
+    writeOtpLog(req, {
+      action: "verify_otp",
+      status: "blocked",
+      reason: "email_not_allowed",
+      shareId,
+      documentId: share.documentId,
+      documentTitle: share.documentTitle,
+      senderEmail: share.senderEmail,
+      recipientEmail: share.recipientEmail,
+      email
+    });
     return res.status(403).json({ error: "This email is not authorized" });
   }
 
@@ -510,73 +437,149 @@ app.post("/api/verify-otp", async (req, res) => {
   const record = otpStore.get(storeKey);
 
   if (!record) {
-    writeOtpLog(req, { action: "verify_otp", email, status: "failed", reason: "otp_not_requested", shareId, documentId });
+    writeOtpLog(req, {
+      action: "verify_otp",
+      status: "failed",
+      reason: "otp_not_requested",
+      shareId,
+      documentId: share.documentId,
+      documentTitle: share.documentTitle,
+      senderEmail: share.senderEmail,
+      recipientEmail: share.recipientEmail,
+      email
+    });
     return res.status(400).json({ error: "Please request OTP first" });
-  }
-
-  if ((record.shareId || "") !== (shareId || "")) {
-    otpStore.delete(storeKey);
-    writeOtpLog(req, { action: "verify_otp", email, status: "failed", reason: "otp_share_mismatch", shareId, documentId });
-    return res.status(400).json({ error: "OTP does not match this secure link. Request a new OTP." });
   }
 
   if (record.expiresAt < Date.now()) {
     otpStore.delete(storeKey);
-    writeOtpLog(req, { action: "verify_otp", email, status: "failed", reason: "otp_expired", shareId, documentId });
+    writeOtpLog(req, {
+      action: "verify_otp",
+      status: "failed",
+      reason: "otp_expired",
+      shareId,
+      documentId: share.documentId,
+      documentTitle: share.documentTitle,
+      senderEmail: share.senderEmail,
+      recipientEmail: share.recipientEmail,
+      email
+    });
     return res.status(400).json({ error: "OTP expired" });
   }
 
   if (record.attempts >= MAX_OTP_ATTEMPTS) {
     otpStore.delete(storeKey);
-    writeOtpLog(req, { action: "verify_otp", email, status: "failed", reason: "too_many_attempts", shareId, documentId });
+    writeOtpLog(req, {
+      action: "verify_otp",
+      status: "failed",
+      reason: "too_many_attempts",
+      shareId,
+      documentId: share.documentId,
+      documentTitle: share.documentTitle,
+      senderEmail: share.senderEmail,
+      recipientEmail: share.recipientEmail,
+      email
+    });
     return res.status(429).json({ error: "Too many wrong attempts. Request a new OTP." });
   }
 
   const ok = await bcrypt.compare(otp, record.otpHash);
-
   if (!ok) {
     record.attempts += 1;
-    writeOtpLog(req, { action: "verify_otp", email, status: "failed", reason: "wrong_otp", attempts: record.attempts, shareId, documentId });
+    writeOtpLog(req, {
+      action: "verify_otp",
+      status: "failed",
+      reason: "wrong_otp",
+      attempts: record.attempts,
+      shareId,
+      documentId: share.documentId,
+      documentTitle: share.documentTitle,
+      senderEmail: share.senderEmail,
+      recipientEmail: share.recipientEmail,
+      email
+    });
     return res.status(400).json({ error: "Invalid OTP" });
   }
 
   otpStore.delete(storeKey);
-  const token = makeToken(email, shareId || null, documentId);
+  const token = makeToken(email, shareId);
 
-  writeOtpLog(req, { action: "verify_otp", email, status: "success", shareId, documentId });
-  writeAccessLog(req, { action: "login", email, status: "success", documentId, shareId });
+  writeOtpLog(req, {
+    action: "verify_otp",
+    status: "success",
+    shareId,
+    documentId: share.documentId,
+    documentTitle: share.documentTitle,
+    senderEmail: share.senderEmail,
+    recipientEmail: share.recipientEmail,
+    email
+  });
+  writeAccessLog(req, {
+    action: "pdf_login",
+    status: "success",
+    shareId,
+    documentId: share.documentId,
+    documentTitle: share.documentTitle,
+    senderEmail: share.senderEmail,
+    recipientEmail: share.recipientEmail,
+    openedByEmail: email
+  });
 
-  return res.json({ token, expiresInMinutes: ACCESS_TOKEN_MINUTES, documentId });
+  return res.json({ token, expiresInMinutes: ACCESS_TOKEN_MINUTES, documentId: share.documentId });
 });
 
 app.get("/api/pdf/:documentId", auth, (req, res) => {
   const requestedDocumentId = String(req.params.documentId || "").trim();
-  const sharedDocument = req.share
-    ? { documentId: req.share.documentId, fileName: req.share.documentFile, title: req.share.title }
-    : getDocumentById(DOCUMENT_ID);
-  const targetDocument = sharedDocument || defaultDocuments()[0];
 
-  if (requestedDocumentId !== targetDocument.documentId) {
-    writeAccessLog(req, { action: "pdf_access", email: req.user.email, status: "failed", reason: "wrong_document_id", documentId: requestedDocumentId });
+  if (requestedDocumentId !== req.share.documentId) {
+    writeAccessLog(req, {
+      action: "pdf_access",
+      status: "failed",
+      reason: "wrong_document_id",
+      shareId: req.share.shareId,
+      documentId: requestedDocumentId,
+      documentTitle: req.share.documentTitle,
+      senderEmail: req.share.senderEmail,
+      recipientEmail: req.share.recipientEmail,
+      openedByEmail: req.user.email
+    });
     return res.status(404).json({ error: "Document not found" });
   }
 
-  const filePath = path.join(DOC_DIR, targetDocument.fileName);
-
+  const filePath = path.join(DOC_DIR, req.share.documentFile);
   if (!fs.existsSync(filePath)) {
-    writeAccessLog(req, { action: "pdf_access", email: req.user.email, status: "failed", reason: "file_missing", documentId: targetDocument.documentId });
+    writeAccessLog(req, {
+      action: "pdf_access",
+      status: "failed",
+      reason: "file_missing",
+      shareId: req.share.shareId,
+      documentId: req.share.documentId,
+      documentTitle: req.share.documentTitle,
+      senderEmail: req.share.senderEmail,
+      recipientEmail: req.share.recipientEmail,
+      openedByEmail: req.user.email
+    });
     return res.status(404).json({ error: "PDF file missing on server" });
   }
 
-  writeAccessLog(req, { action: "pdf_access", email: req.user.email, status: "success", documentId: targetDocument.documentId, shareId: req.user.shareId || null });
+  writeAccessLog(req, {
+    action: "pdf_opened",
+    status: "success",
+    shareId: req.share.shareId,
+    documentId: req.share.documentId,
+    documentTitle: req.share.documentTitle,
+    senderEmail: req.share.senderEmail,
+    recipientEmail: req.share.recipientEmail,
+    openedByEmail: req.user.email
+  });
 
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", `inline; filename="${path.basename(targetDocument.fileName)}"`);
+  res.setHeader("Content-Disposition", `inline; filename="${path.basename(req.share.documentFile)}"`);
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
   fs.createReadStream(filePath).pipe(res);
 });
 
-app.get("/api/access-logs", adminAuth, (req, res) => {
+app.get("/api/access-logs", (req, res) => {
   const logs = fs.existsSync(ACCESS_LOG_FILE)
     ? fs.readFileSync(ACCESS_LOG_FILE, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line))
     : [];
@@ -585,6 +588,6 @@ app.get("/api/access-logs", adminAuth, (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Secure quotation backend running on http://localhost:${PORT}`);
-  console.log(`Allowed origins: ${ALLOWED_ORIGINS.join(", ")}`);
+  console.log(`Secure PDF backend running on http://localhost:${PORT}`);
+  console.log(`Sender email: ${SENDER_EMAIL}`);
 });

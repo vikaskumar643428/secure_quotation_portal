@@ -10,6 +10,11 @@ function tokenStorageKey(shareId) {
 function App() {
   const [shareId] = useState(shareIdFromUrl);
   const [documentInfo, setDocumentInfo] = useState(null);
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [shareMessage, setShareMessage] = useState("");
+  const [shareUrl, setShareUrl] = useState("");
+  const [logs, setLogs] = useState([]);
+
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [stage, setStage] = useState("request");
@@ -17,55 +22,39 @@ function App() {
   const [token, setToken] = useState(localStorage.getItem(tokenStorageKey(shareIdFromUrl)) || "");
   const [pdfUrl, setPdfUrl] = useState("");
 
-  const [adminEmail, setAdminEmail] = useState("");
-  const [adminPassword, setAdminPassword] = useState("");
-  const [adminToken, setAdminToken] = useState(localStorage.getItem("quotation_admin_token") || "");
-  const [adminMessage, setAdminMessage] = useState("");
-  const [documents, setDocuments] = useState([]);
-  const [selectedDocumentId, setSelectedDocumentId] = useState("");
-  const [recipientEmail, setRecipientEmail] = useState("");
-  const [shareMessage, setShareMessage] = useState("");
-  const [shareUrl, setShareUrl] = useState("");
-
   useEffect(() => {
-    if (!shareId) {
-      return;
-    }
+    const url = shareId ? `${API_BASE}/api/share/${shareId}` : `${API_BASE}/api/document-info`;
 
-    fetch(`${API_BASE}/api/share/${shareId}`)
+    fetch(url)
       .then((res) => res.json())
       .then((data) => {
         if (data.error) {
           throw new Error(data.error);
         }
         setDocumentInfo(data);
-        setEmail(data.allowedRecipientEmail || "");
+        if (shareId) {
+          setEmail(data.recipientEmail || "");
+        }
       })
-      .catch((err) => setMessage(err.message || "Backend not connected"));
+      .catch((err) => {
+        if (shareId) {
+          setMessage(err.message || "Backend not connected");
+        } else {
+          setShareMessage(err.message || "Backend not connected");
+        }
+      });
   }, [shareId]);
 
   useEffect(() => {
-    if (!adminToken || shareId) {
+    if (shareId) {
       return;
     }
 
-    fetch(`${API_BASE}/api/admin/documents`, {
-      headers: { Authorization: `Bearer ${adminToken}` }
-    })
-      .then(async (res) => {
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || "Could not load documents");
-        }
-        setDocuments(data.documents || []);
-        setSelectedDocumentId((current) => current || data.documents?.[0]?.documentId || "");
-      })
-      .catch((err) => {
-        localStorage.removeItem("quotation_admin_token");
-        setAdminToken("");
-        setAdminMessage(err.message || "Admin session expired");
-      });
-  }, [adminToken, shareId]);
+    fetch(`${API_BASE}/api/access-logs`)
+      .then((res) => res.json())
+      .then((data) => setLogs(data.logs || []))
+      .catch(() => {});
+  }, [shareId, shareUrl]);
 
   useEffect(() => {
     if (!shareId || !token || !documentInfo?.documentId) {
@@ -89,6 +78,31 @@ function App() {
         setStage("request");
       });
   }, [shareId, token, documentInfo]);
+
+  async function createShare(e) {
+    e.preventDefault();
+    setShareMessage("Sending secure link...");
+    setShareUrl("");
+
+    const res = await fetch(`${API_BASE}/api/create-share`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recipientEmail })
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      setShareMessage(data.error || "Could not send secure link");
+      return;
+    }
+
+    setShareMessage(data.message || "Secure link sent");
+    setShareUrl(data.shareUrl || "");
+
+    const logRes = await fetch(`${API_BASE}/api/access-logs`);
+    const logData = await logRes.json();
+    setLogs(logData.logs || []);
+  }
 
   async function requestOtp(e) {
     e.preventDefault();
@@ -139,117 +153,58 @@ function App() {
     setStage("request");
   }
 
-  async function loginAdmin(e) {
-    e.preventDefault();
-    setAdminMessage("Signing in...");
-
-    const res = await fetch(`${API_BASE}/api/admin/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: adminEmail, password: adminPassword })
-    });
-    const data = await res.json();
-
-    if (!res.ok) {
-      setAdminMessage(data.error || "Admin login failed");
-      return;
-    }
-
-    localStorage.setItem("quotation_admin_token", data.token);
-    setAdminToken(data.token);
-    setAdminMessage(`Signed in as ${data.email}`);
-  }
-
-  function logoutAdmin() {
-    localStorage.removeItem("quotation_admin_token");
-    setAdminToken("");
-    setDocuments([]);
-    setSelectedDocumentId("");
-    setShareUrl("");
-    setShareMessage("");
-    setAdminPassword("");
-  }
-
-  async function createShare(e) {
-    e.preventDefault();
-    setShareMessage("Sending secure link...");
-    setShareUrl("");
-
-    const res = await fetch(`${API_BASE}/api/create-share`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${adminToken}`
-      },
-      body: JSON.stringify({
-        recipientEmail,
-        documentId: selectedDocumentId
-      })
-    });
-    const data = await res.json();
-
-    if (!res.ok) {
-      setShareMessage(data.error || "Could not create secure link");
-      return;
-    }
-
-    setShareMessage(data.message || "Secure link created");
-    setShareUrl(data.shareUrl || "");
-  }
-
   if (!shareId) {
     return (
       <main className="page">
         <section className="card">
           <div className="brand">LASER POWER & INFRA LIMITED</div>
-          <h1>Admin Share Console</h1>
+          <h1>Secure PDF Share</h1>
           <p className="sub">
-            Login karke kisi bhi configured PDF ko recipient email se bind karke secure OTP link bhejiye.
+            Ek PDF recipient email par OTP se khulega aur har action ka log save hoga.
           </p>
 
-          {!adminToken && (
-            <form onSubmit={loginAdmin} className="form">
-              <label>Admin Email</label>
-              <input value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} placeholder="Enter admin email" />
-              <label>Admin Password</label>
-              <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="Enter admin password" />
-              <button type="submit">Login</button>
-            </form>
-          )}
-
-          {adminToken && (
-            <div className="shareSection">
-              <div className="toolbar">
-                <span>Admin session active</span>
-                <button onClick={logoutAdmin} className="secondary">Logout</button>
-              </div>
-
-              <form onSubmit={createShare} className="form">
-                <label>Select PDF</label>
-                <select value={selectedDocumentId} onChange={(e) => setSelectedDocumentId(e.target.value)}>
-                  {documents.map((doc) => (
-                    <option key={doc.documentId} value={doc.documentId}>
-                      {doc.title}
-                    </option>
-                  ))}
-                </select>
-
-                <label>Recipient Email</label>
-                <input value={recipientEmail} onChange={(e) => setRecipientEmail(e.target.value)} placeholder="Enter recipient email" />
-
-                <button type="submit">Send Secure Link</button>
-              </form>
-
-              {shareMessage && <p className="message">{shareMessage}</p>}
-              {shareUrl && (
-                <p className="shareLink">
-                  Secure link: <a href={shareUrl}>{shareUrl}</a>
-                </p>
-              )}
+          {documentInfo && (
+            <div className="info">
+              <strong>PDF:</strong> {documentInfo.title}<br />
+              <strong>Sender Email:</strong> {documentInfo.senderEmail}
             </div>
           )}
 
-          {adminMessage && <p className="message">{adminMessage}</p>}
+          <div className="shareSection">
+            <form onSubmit={createShare} className="form">
+              <label>Party Email</label>
+              <input value={recipientEmail} onChange={(e) => setRecipientEmail(e.target.value)} placeholder="Enter recipient email" />
+              <button type="submit">Send Secure Link</button>
+            </form>
+
+            {shareMessage && <p className="message">{shareMessage}</p>}
+            {shareUrl && (
+              <p className="shareLink">
+                Secure link: <a href={shareUrl}>{shareUrl}</a>
+              </p>
+            )}
+          </div>
+
+          <div className="logsSection">
+            <h2>Recent Logs</h2>
+            <div className="logsTable">
+              <div className="logsHead">
+                <span>Time</span>
+                <span>Action</span>
+                <span>Email</span>
+                <span>PDF</span>
+              </div>
+              {logs.length === 0 && <p className="emptyText">No logs yet.</p>}
+              {logs.slice(0, 12).map((log, index) => (
+                <div className="logsRow" key={`${log.time}-${index}`}>
+                  <span>{new Date(log.time).toLocaleString()}</span>
+                  <span>{log.action}</span>
+                  <span>{log.openedByEmail || log.recipientEmail || "-"}</span>
+                  <span>{log.documentTitle || log.documentId || "-"}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         </section>
       </main>
     );
@@ -259,22 +214,22 @@ function App() {
     <main className="page">
       <section className="card">
         <div className="brand">LASER POWER & INFRA LIMITED</div>
-        <h1>Secure Document Access</h1>
+        <h1>Secure PDF Access</h1>
         <p className="sub">
-          Yeh secure link sirf linked email ID ke OTP verification ke baad hi document open karega.
+          Yeh PDF sirf linked email par OTP verify hone ke baad hi khulega.
         </p>
 
         {documentInfo && (
           <div className="info">
-            <strong>Document:</strong> {documentInfo.title}<br />
-            <strong>Allowed Email:</strong> {documentInfo.allowedRecipientEmail}
+            <strong>PDF:</strong> {documentInfo.title}<br />
+            <strong>Recipient Email:</strong> {documentInfo.recipientEmail}
           </div>
         )}
 
         {stage === "request" && (
           <form onSubmit={requestOtp} className="form">
             <label>Email ID</label>
-            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Authorized email" readOnly />
+            <input value={email} onChange={(e) => setEmail(e.target.value)} readOnly />
             <button type="submit">Send OTP</button>
           </form>
         )}
@@ -290,7 +245,7 @@ function App() {
         {stage === "viewer" && (
           <div className="viewerWrap">
             <div className="toolbar">
-              <span>Access granted for: {email}</span>
+              <span>Opened by: {email}</span>
               <button onClick={logoutViewer}>Logout</button>
             </div>
             <div className="pdfBox">
