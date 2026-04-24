@@ -1,0 +1,13 @@
+Subject: Secure Quotation Access - LQ26Y-00119
+
+Dear Sir/Madam,
+
+Please access the quotation using the secure link below:
+
+[PASTE YOUR FRONTEND LINK HERE]
+
+This secure link is bound to the recipient email and the document can be opened only after OTP verification on the same email ID.
+
+Regards,
+Samrat Dey
+LASER POWER & INFRA LIMITED
