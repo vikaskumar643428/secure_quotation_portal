@@ -1,0 +1,22 @@
+# Root
+node_modules/
+.env
+.env.*.local
+*.log
+.DS_Store
+Thumbs.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.production
+
+# Backend
+backend/node_modules/
+backend/.env
+backend/data/*.jsonl
+backend/data/shares.json
+backend/data/access-log.jsonl
+backend/data/otp-log.jsonl
